@@ -1076,11 +1076,11 @@
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
 </span></code></pre></div>
 <h3 id="connecting-to-lancedb-enterprise">Connecting to LanceDB Enterprise<a class="headerlink" href="#connecting-to-lancedb-enterprise" title="Permanent link"></a></h3>
-<p>For LanceDB Enterprise deployments with a custom VPC endpoint:</p>
+<p>For LanceDB Enterprise deployments with a custom endpoint:</p>
 <div class="language-java highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">RestNamespace</span><span class="w"> </span><span class="n">namespace</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">LanceDbRestNamespaceBuilder</span><span class="p">.</span><span class="na">newBuilder</span><span class="p">()</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span><span class="p">.</span><span class="na">apiKey</span><span class="p">(</span><span class="s">&quot;your_lancedb_enterprise_api_key&quot;</span><span class="p">)</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="p">.</span><span class="na">database</span><span class="p">(</span><span class="s">&quot;your_database_name&quot;</span><span class="p">)</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="p">.</span><span class="na">endpoint</span><span class="p">(</span><span class="s">&quot;http://&lt;vpc_endpoint_dns_name&gt;:80&quot;</span><span class="p">)</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="p">.</span><span class="na">endpoint</span><span class="p">(</span><span class="s">&quot;&lt;your_enterprise_endpoint&gt;&quot;</span><span class="p">)</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="p">.</span><span class="na">build</span><span class="p">();</span>
 </span></code></pre></div>
 <h3 id="configuration-options">Configuration Options<a class="headerlink" href="#configuration-options" title="Permanent link"></a></h3>
