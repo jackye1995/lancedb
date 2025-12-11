@@ -647,6 +647,8 @@ impl ListingDatabase {
                     lance_read_params: None,
                     location: None,
                     namespace_client: None,
+                    server_side_write_enabled: false,
+                    server_side_table_metadata_enabled: false,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -847,6 +849,8 @@ impl Database for ListingDatabase {
             Some(write_params),
             self.read_consistency_interval,
             request.namespace_client,
+            request.server_side_write_enabled,
+            request.server_side_table_metadata_enabled,
         )
         .await
         {
@@ -919,6 +923,8 @@ impl Database for ListingDatabase {
             None,
             self.read_consistency_interval,
             None,
+            false,
+            false,
         )
         .await?;
 
@@ -991,6 +997,8 @@ impl Database for ListingDatabase {
                 Some(read_params),
                 self.read_consistency_interval,
                 request.namespace_client,
+                request.server_side_write_enabled,
+                request.server_side_table_metadata_enabled,
             )
             .await?,
         );
@@ -1094,6 +1102,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1160,6 +1170,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1219,6 +1231,8 @@ mod tests {
             write_options: Default::default(),
             location: None,
             namespace_client: None,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         })
         .await
         .unwrap();
@@ -1255,6 +1269,8 @@ mod tests {
             write_options: Default::default(),
             location: None,
             namespace_client: None,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         })
         .await
         .unwrap();
@@ -1295,6 +1311,8 @@ mod tests {
             write_options: Default::default(),
             location: None,
             namespace_client: None,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         })
         .await
         .unwrap();
@@ -1335,6 +1353,8 @@ mod tests {
             write_options: Default::default(),
             location: None,
             namespace_client: None,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         })
         .await
         .unwrap();
@@ -1390,6 +1410,8 @@ mod tests {
             write_options: Default::default(),
             location: None,
             namespace_client: None,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         })
         .await
         .unwrap();
@@ -1448,6 +1470,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1534,6 +1558,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1621,6 +1647,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1715,6 +1743,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1813,6 +1843,8 @@ mod tests {
                 write_options: Default::default(),
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1867,6 +1899,8 @@ mod tests {
                 write_options,
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();
@@ -1941,6 +1975,8 @@ mod tests {
                 write_options,
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             })
             .await
             .unwrap();

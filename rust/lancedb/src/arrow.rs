@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::io::Cursor;
 use std::{pin::Pin, sync::Arc};
 
+use arrow_ipc::reader::FileReader;
 pub use arrow_schema;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
@@ -13,6 +15,22 @@ use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 use {crate::polars_arrow_convertors, polars::frame::ArrowChunk, polars::prelude::DataFrame};
 
 use crate::{error::Result, Error};
+
+/// Parse Arrow IPC file format bytes into a SendableRecordBatchStream.
+///
+/// This is used to parse query responses from REST APIs that return
+/// Arrow IPC file format (application/vnd.apache.arrow.file).
+pub fn parse_arrow_ipc_file(
+    bytes: impl AsRef<[u8]> + Send + 'static,
+) -> Result<datafusion_physical_plan::SendableRecordBatchStream> {
+    let cursor = Cursor::new(bytes);
+    let reader = FileReader::try_new(cursor, None).map_err(|e| Error::Runtime {
+        message: format!("Failed to parse Arrow IPC file: {}", e),
+    })?;
+    let schema = reader.schema();
+    let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
+    Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+}
 
 /// An iterator of batches that also has a schema
 pub trait RecordBatchReader: Iterator<Item = Result<arrow_array::RecordBatch>> {

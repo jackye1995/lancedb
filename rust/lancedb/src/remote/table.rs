@@ -16,11 +16,8 @@ use crate::table::{AddDataMode, AnyQuery, Filter, TableStatistics};
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{DistanceType, Error, Table};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
-use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
-use datafusion_common::DataFusionError;
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, RecordBatchStream, SendableRecordBatchStream};
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
@@ -34,7 +31,6 @@ use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -377,10 +373,7 @@ impl<S: HttpSend> RemoteTable<S> {
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
         let body = response.bytes().await.err_to_http(request_id.into())?;
-        let reader = FileReader::try_new(Cursor::new(body), None)?;
-        let schema = reader.schema();
-        let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
-        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+        crate::arrow::parse_arrow_ipc_file(body)
     }
 
     fn apply_query_params(

@@ -6,8 +6,10 @@
 use arrow::array::{AsArray, FixedSizeListBuilder, Float32Builder};
 use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use bytes::Bytes;
 use datafusion_expr::Expr;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
@@ -41,8 +43,15 @@ use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
 use lance_namespace::models::{
-    QueryTableRequest as NsQueryTableRequest, QueryTableRequestFullTextQuery,
-    QueryTableRequestVector, StringFtsQuery,
+    AlterColumnsEntry, AlterTableAddColumnsRequest, AlterTableAlterColumnsRequest,
+    AlterTableDropColumnsRequest, CountTableRowsRequest, CreateTableIndexRequest,
+    CreateTableTagRequest, DeleteFromTableRequest, DeleteTableTagRequest,
+    DescribeTableIndexStatsRequest, DropTableIndexRequest, GetTableStatsRequest,
+    GetTableTagVersionRequest, InsertIntoTableRequest, ListTableIndicesRequest,
+    ListTableTagsRequest, ListTableVersionsRequest, MergeInsertIntoTableRequest,
+    NewColumnTransform as NsNewColumnTransform, QueryTableRequest as NsQueryTableRequest,
+    QueryTableRequestColumns, QueryTableRequestFullTextQuery, QueryTableRequestVector,
+    RestoreTableRequest, StringFtsQuery, UpdateTableRequest, UpdateTableTagRequest,
 };
 use lance_namespace::LanceNamespace;
 use lance_table::format::Manifest;
@@ -1473,6 +1482,77 @@ impl Tags for NativeTags {
     }
 }
 
+/// Server-side namespace tags reference
+pub struct NsTagsRef {
+    namespace_client: Arc<dyn LanceNamespace>,
+    namespace: Vec<String>,
+}
+
+#[async_trait]
+impl Tags for NsTagsRef {
+    async fn list(&self) -> Result<HashMap<String, TagContents>> {
+        let request = ListTableTagsRequest {
+            id: Some(self.namespace.clone()),
+            page_token: None,
+            limit: None,
+        };
+        let response = self.namespace_client.list_table_tags(request).await?;
+        let tags = response
+            .tags
+            .into_iter()
+            .map(|(name, content)| {
+                (
+                    name,
+                    TagContents {
+                        branch: None,
+                        version: content.version as u64,
+                        manifest_size: 0,
+                    },
+                )
+            })
+            .collect();
+        Ok(tags)
+    }
+
+    async fn get_version(&self, tag: &str) -> Result<u64> {
+        let request = GetTableTagVersionRequest {
+            id: Some(self.namespace.clone()),
+            tag: tag.to_string(),
+        };
+        let response = self.namespace_client.get_table_tag_version(request).await?;
+        Ok(response.version as u64)
+    }
+
+    async fn create(&mut self, tag: &str, version: u64) -> Result<()> {
+        let request = CreateTableTagRequest {
+            id: Some(self.namespace.clone()),
+            tag: tag.to_string(),
+            version: version as i64,
+        };
+        self.namespace_client.create_table_tag(request).await?;
+        Ok(())
+    }
+
+    async fn delete(&mut self, tag: &str) -> Result<()> {
+        let request = DeleteTableTagRequest {
+            id: Some(self.namespace.clone()),
+            tag: tag.to_string(),
+        };
+        self.namespace_client.delete_table_tag(request).await?;
+        Ok(())
+    }
+
+    async fn update(&mut self, tag: &str, version: u64) -> Result<()> {
+        let request = UpdateTableTagRequest {
+            id: Some(self.namespace.clone()),
+            tag: tag.to_string(),
+            version: version as i64,
+        };
+        self.namespace_client.update_table_tag(request).await?;
+        Ok(())
+    }
+}
+
 pub trait NativeTableExt {
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
     fn as_native(&self) -> Option<&NativeTable>;
@@ -1498,6 +1578,10 @@ pub struct NativeTable {
     // Optional namespace client for server-side query execution.
     // When set, queries will be executed on the namespace server instead of locally.
     namespace_client: Option<Arc<dyn LanceNamespace>>,
+    // Whether to enable server-side write execution.
+    server_side_write_enabled: bool,
+    // Whether to enable server-side table metadata operations.
+    server_side_table_metadata_enabled: bool,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -1509,6 +1593,11 @@ impl std::fmt::Debug for NativeTable {
             .field("uri", &self.uri)
             .field("read_consistency_interval", &self.read_consistency_interval)
             .field("namespace_client", &self.namespace_client)
+            .field("server_side_write_enabled", &self.server_side_write_enabled)
+            .field(
+                "server_side_table_metadata_enabled",
+                &self.server_side_table_metadata_enabled,
+            )
             .finish()
     }
 }
@@ -1545,7 +1634,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, vec![], None, None, None, None).await
+        Self::open_with_params(uri, &name, vec![], None, None, None, None, false, false).await
     }
 
     /// Opens an existing Table
@@ -1556,6 +1645,8 @@ impl NativeTable {
     /// * `name` The Table name
     /// * `params` The [ReadParams] to use when opening the table
     /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `server_side_write_enabled` - Whether to enable server-side write execution
+    /// * `server_side_table_metadata_enabled` - Whether to enable server-side table metadata operations
     ///
     /// # Returns
     ///
@@ -1569,6 +1660,8 @@ impl NativeTable {
         params: Option<ReadParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_write_enabled: bool,
+        server_side_table_metadata_enabled: bool,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -1600,6 +1693,8 @@ impl NativeTable {
             dataset,
             read_consistency_interval,
             namespace_client,
+            server_side_write_enabled,
+            server_side_table_metadata_enabled,
         })
     }
 
@@ -1648,6 +1743,8 @@ impl NativeTable {
     /// * `batches` RecordBatch to be saved in the database.
     /// * `params` - Write parameters.
     /// * `namespace_client` - Optional namespace client for server-side query execution
+    /// * `server_side_write_enabled` - Whether to enable server-side write execution
+    /// * `server_side_table_metadata_enabled` - Whether to enable server-side table metadata operations
     ///
     /// # Returns
     ///
@@ -1662,6 +1759,8 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_write_enabled: bool,
+        server_side_table_metadata_enabled: bool,
     ) -> Result<Self> {
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
@@ -1694,6 +1793,8 @@ impl NativeTable {
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             read_consistency_interval,
             namespace_client,
+            server_side_write_enabled,
+            server_side_table_metadata_enabled,
         })
     }
 
@@ -1707,6 +1808,8 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
         namespace_client: Option<Arc<dyn LanceNamespace>>,
+        server_side_write_enabled: bool,
+        server_side_table_metadata_enabled: bool,
     ) -> Result<Self> {
         let batches = RecordBatchIterator::new(vec![], schema);
         Self::create(
@@ -1718,6 +1821,8 @@ impl NativeTable {
             params,
             read_consistency_interval,
             namespace_client,
+            server_side_write_enabled,
+            server_side_table_metadata_enabled,
         )
         .await
     }
@@ -2152,7 +2257,10 @@ impl NativeTable {
                 // Convert select to columns list
                 let columns = match &vq.base.select {
                     Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Columns(cols) => Some(Box::new(QueryTableRequestColumns {
+                        column_names: Some(cols.clone()),
+                        column_aliases: None,
+                    })),
                     Select::Dynamic(_) => {
                         return Err(Error::NotSupported {
                             message:
@@ -2225,7 +2333,10 @@ impl NativeTable {
 
                 let columns = match &q.select {
                     Select::All => None,
-                    Select::Columns(cols) => Some(cols.clone()),
+                    Select::Columns(cols) => Some(Box::new(QueryTableRequestColumns {
+                        column_names: Some(cols.clone()),
+                        column_aliases: None,
+                    })),
                     Select::Dynamic(_) => {
                         return Err(Error::NotSupported {
                             message: "Dynamic columns are not supported for server-side query"
@@ -2336,35 +2447,13 @@ impl NativeTable {
         })
     }
 
-    /// Parse Arrow IPC response from the namespace server.
+    /// Parse Arrow IPC file response from the namespace server.
     async fn parse_arrow_ipc_response(
         &self,
         bytes: bytes::Bytes,
     ) -> Result<DatasetRecordBatchStream> {
-        use arrow_ipc::reader::StreamReader;
-        use std::io::Cursor;
-
-        let cursor = Cursor::new(bytes);
-        let reader = StreamReader::try_new(cursor, None).map_err(|e| Error::Runtime {
-            message: format!("Failed to parse Arrow IPC response: {}", e),
-        })?;
-
-        // Collect all record batches
-        let schema = reader.schema();
-        let batches: Vec<_> = reader
-            .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| Error::Runtime {
-                message: format!("Failed to read Arrow IPC batches: {}", e),
-            })?;
-
-        // Create a stream from the batches
-        let stream = futures::stream::iter(batches.into_iter().map(Ok));
-        let record_batch_stream = Box::pin(
-            datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream),
-        );
-
-        Ok(DatasetRecordBatchStream::new(record_batch_stream))
+        let stream = crate::arrow::parse_arrow_ipc_file(bytes)?;
+        Ok(DatasetRecordBatchStream::new(stream))
     }
 
     /// Check whether the table uses V2 manifest paths.
@@ -2448,6 +2537,21 @@ impl NativeTable {
         dataset.replace_field_metadata(new_values).await?;
         Ok(())
     }
+
+    /// Helper function to serialize a RecordBatchReader to IPC stream format
+    fn serialize_to_ipc_stream(data: Box<dyn RecordBatchReader + Send>) -> Result<Vec<u8>> {
+        let schema = data.schema();
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &schema)?;
+            for batch_result in data {
+                let batch = batch_result?;
+                writer.write(&batch)?;
+            }
+            writer.finish()?;
+        }
+        Ok(buf)
+    }
 }
 
 #[async_trait::async_trait]
@@ -2469,6 +2573,23 @@ impl BaseTable for NativeTable {
     }
 
     async fn version(&self) -> Result<u64> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = ListTableVersionsRequest {
+                    id: Some(self.namespace.clone()),
+                    page_token: None,
+                    limit: Some(1),
+                };
+                let response = namespace_client.list_table_versions(request).await?;
+                if let Some(version) = response.versions.first() {
+                    return Ok(version.version as u64);
+                }
+                return Err(Error::InvalidInput {
+                    message: "No versions found for table".to_string(),
+                });
+            }
+        }
         Ok(self.dataset.get().await?.version().version)
     }
 
@@ -2488,6 +2609,29 @@ impl BaseTable for NativeTable {
     }
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = ListTableVersionsRequest {
+                    id: Some(self.namespace.clone()),
+                    page_token: None,
+                    limit: None,
+                };
+                let response = namespace_client.list_table_versions(request).await?;
+                let versions = response
+                    .versions
+                    .into_iter()
+                    .map(|v| Version {
+                        version: v.version as u64,
+                        timestamp: chrono::DateTime::parse_from_rfc3339(&v.timestamp)
+                            .map(|dt| dt.with_timezone(&chrono::Utc))
+                            .unwrap_or_else(|_| chrono::Utc::now()),
+                        metadata: std::collections::BTreeMap::new(),
+                    })
+                    .collect();
+                return Ok(versions);
+            }
+        }
         Ok(self.dataset.get().await?.versions().await?)
     }
 
@@ -2499,6 +2643,22 @@ impl BaseTable for NativeTable {
                 .ok_or_else(|| Error::InvalidInput {
                     message: "you must run checkout before running restore".to_string(),
                 })?;
+
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = RestoreTableRequest {
+                    id: Some(self.namespace.clone()),
+                    version: version as i64,
+                };
+                namespace_client.restore_table(request).await?;
+                self.dataset
+                    .as_latest(self.read_consistency_interval)
+                    .await?;
+                return Ok(());
+            }
+        }
+
         {
             // Use get_mut_unchecked as restore is the only "write" operation that is allowed
             // when the table is in time travel mode.
@@ -2524,6 +2684,30 @@ impl BaseTable for NativeTable {
     }
 
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
+        // Use server-side query if namespace_client is available
+        if let Some(ref namespace_client) = self.namespace_client {
+            let predicate = match &filter {
+                None => None,
+                Some(Filter::Sql(sql)) => Some(sql.clone()),
+                Some(Filter::Datafusion(_)) => {
+                    return Err(Error::NotSupported {
+                        message: "Datafusion filters are not supported for server-side count_rows"
+                            .to_string(),
+                    });
+                }
+            };
+
+            let request = CountTableRowsRequest {
+                id: Some(self.namespace.clone()),
+                version: None,
+                predicate,
+            };
+
+            let count = namespace_client.count_table_rows(request).await?;
+            return Ok(count as usize);
+        }
+
+        // Fall back to local execution
         let dataset = self.dataset.get().await?;
         match filter {
             None => Ok(dataset.count_rows(None).await?),
@@ -2545,6 +2729,33 @@ impl BaseTable for NativeTable {
             add.embedding_registry,
         )?) as Box<dyn RecordBatchReader + Send>;
 
+        // Use server-side write if enabled and namespace_client is available
+        if self.server_side_write_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let mode = match add.mode {
+                    AddDataMode::Append => "Append".to_string(),
+                    AddDataMode::Overwrite => "Overwrite".to_string(),
+                };
+
+                // Serialize data to IPC stream format
+                let data_bytes = Self::serialize_to_ipc_stream(data)?;
+
+                let request = InsertIntoTableRequest {
+                    id: Some(self.namespace.clone()),
+                    mode: Some(mode),
+                };
+
+                let _response = namespace_client
+                    .insert_into_table(request, Bytes::from(data_bytes))
+                    .await?;
+
+                // Note: InsertIntoTableResponse doesn't include version,
+                // so we return 0. Use table.version() if you need the actual version.
+                return Ok(AddResult { version: 0 });
+            }
+        }
+
+        // Fall back to local execution
         let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -2572,6 +2783,79 @@ impl BaseTable for NativeTable {
                 message: "Multi-column (composite) indices are not yet supported".to_string(),
             });
         }
+
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let column = opts.columns[0].clone();
+
+                // Map index type to namespace API string
+                let index_type_str = match &opts.index {
+                    Index::BTree(_) => "BTREE",
+                    Index::Bitmap(_) => "BITMAP",
+                    Index::LabelList(_) => "LABEL_LIST",
+                    Index::IvfFlat(_) => "IVF_FLAT",
+                    Index::IvfPq(_) => "IVF_PQ",
+                    Index::IvfSq(_) => "IVF_SQ",
+                    Index::IvfRq(_) => "IVF_RQ",
+                    Index::IvfHnswPq(_) => "IVF_HNSW_PQ",
+                    Index::IvfHnswSq(_) => "IVF_HNSW_SQ",
+                    // For FTS and Auto, fall back to local execution
+                    // (FTS params are private, Auto needs schema analysis)
+                    Index::FTS(_) | Index::Auto => {
+                        let schema = self.schema().await?;
+                        let field = schema.field_with_name(&column)?;
+                        let lance_idx_params =
+                            self.make_index_params(field, opts.index.clone()).await?;
+                        let index_type = self.get_index_type_for_field(field, &opts.index);
+                        let columns = [field.name().as_str()];
+                        let mut dataset = self.dataset.get_mut().await?;
+                        let mut builder = dataset
+                            .create_index_builder(&columns, index_type, lance_idx_params.as_ref())
+                            .train(opts.train)
+                            .replace(opts.replace);
+
+                        if let Some(name) = opts.name {
+                            builder = builder.name(name);
+                        }
+                        builder.await?;
+                        return Ok(());
+                    }
+                };
+
+                // Extract distance type for vector indexes
+                let distance_type = match &opts.index {
+                    Index::IvfFlat(v) => Some(v.distance_type.to_string()),
+                    Index::IvfPq(v) => Some(v.distance_type.to_string()),
+                    Index::IvfSq(v) => Some(v.distance_type.to_string()),
+                    Index::IvfRq(v) => Some(v.distance_type.to_string()),
+                    Index::IvfHnswPq(v) => Some(v.distance_type.to_string()),
+                    Index::IvfHnswSq(v) => Some(v.distance_type.to_string()),
+                    _ => None,
+                };
+
+                let request = CreateTableIndexRequest {
+                    id: Some(self.namespace.clone()),
+                    column,
+                    index_type: index_type_str.to_string(),
+                    name: opts.name.clone(),
+                    distance_type,
+                    // FTS options - not applicable for non-FTS indexes
+                    with_position: None,
+                    base_tokenizer: None,
+                    language: None,
+                    max_token_length: None,
+                    lower_case: None,
+                    stem: None,
+                    remove_stop_words: None,
+                    ascii_folding: None,
+                };
+
+                namespace_client.create_table_index(request).await?;
+                return Ok(());
+            }
+        }
+
         let schema = self.schema().await?;
 
         let field = schema.field_with_name(&opts.columns[0])?;
@@ -2593,6 +2877,18 @@ impl BaseTable for NativeTable {
     }
 
     async fn drop_index(&self, index_name: &str) -> Result<()> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = DropTableIndexRequest {
+                    id: Some(self.namespace.clone()),
+                    index_name: Some(index_name.to_string()),
+                };
+                namespace_client.drop_table_index(request).await?;
+                return Ok(());
+            }
+        }
+
         let mut dataset = self.dataset.get_mut().await?;
         dataset.drop_index(index_name).await?;
         Ok(())
@@ -2604,6 +2900,32 @@ impl BaseTable for NativeTable {
     }
 
     async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
+        // Use server-side write if enabled and namespace_client is available
+        if self.server_side_write_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                // Convert updates to Vec<Vec<String>> format (column, expression pairs)
+                let updates: Vec<Vec<String>> = update
+                    .columns
+                    .iter()
+                    .map(|(col, val)| vec![col.clone(), val.clone()])
+                    .collect();
+
+                let request = UpdateTableRequest {
+                    id: Some(self.namespace.clone()),
+                    predicate: update.filter.clone(),
+                    updates,
+                };
+
+                let response = namespace_client.update_table(request).await?;
+
+                return Ok(UpdateResult {
+                    rows_updated: response.updated_rows as u64,
+                    version: response.version as u64,
+                });
+            }
+        }
+
+        // Fall back to local execution
         let dataset = self.dataset.get().await?.clone();
         let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
         if let Some(predicate) = update.filter {
@@ -2821,6 +3143,46 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        // Use server-side write if enabled and namespace_client is available
+        if self.server_side_write_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                // Serialize data to IPC stream format
+                let data_bytes = Self::serialize_to_ipc_stream(new_data)?;
+
+                // Convert timeout to string format if present
+                let timeout_str = params.timeout.map(|t| format!("{}ms", t.as_millis()));
+
+                let request = MergeInsertIntoTableRequest {
+                    id: Some(self.namespace.clone()),
+                    on: Some(params.on.join(",")),
+                    when_matched_update_all: Some(params.when_matched_update_all),
+                    when_matched_update_all_filt: params.when_matched_update_all_filt.clone(),
+                    when_not_matched_insert_all: Some(params.when_not_matched_insert_all),
+                    when_not_matched_by_source_delete: Some(
+                        params.when_not_matched_by_source_delete,
+                    ),
+                    when_not_matched_by_source_delete_filt: params
+                        .when_not_matched_by_source_delete_filt
+                        .clone(),
+                    timeout: timeout_str,
+                    use_index: Some(params.use_index),
+                };
+
+                let response = namespace_client
+                    .merge_insert_into_table(request, Bytes::from(data_bytes))
+                    .await?;
+
+                return Ok(MergeResult {
+                    version: response.version.unwrap_or(0) as u64,
+                    num_updated_rows: response.num_updated_rows.unwrap_or(0) as u64,
+                    num_inserted_rows: response.num_inserted_rows.unwrap_or(0) as u64,
+                    num_deleted_rows: response.num_deleted_rows.unwrap_or(0) as u64,
+                    num_attempts: 1, // Server-side doesn't return attempts count
+                });
+            }
+        }
+
+        // Fall back to local execution
         let dataset = Arc::new(self.dataset.get().await?.clone());
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
         match (
@@ -2880,6 +3242,23 @@ impl BaseTable for NativeTable {
 
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<DeleteResult> {
+        // Use server-side write if enabled and namespace_client is available
+        if self.server_side_write_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = DeleteFromTableRequest {
+                    id: Some(self.namespace.clone()),
+                    predicate: predicate.to_string(),
+                };
+
+                let response = namespace_client.delete_from_table(request).await?;
+
+                return Ok(DeleteResult {
+                    version: response.version.unwrap_or(0) as u64,
+                });
+            }
+        }
+
+        // Fall back to local execution
         let mut dataset = self.dataset.get_mut().await?;
         dataset.delete(predicate).await?;
         Ok(DeleteResult {
@@ -2888,6 +3267,15 @@ impl BaseTable for NativeTable {
     }
 
     async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                return Ok(Box::new(NsTagsRef {
+                    namespace_client: namespace_client.clone(),
+                    namespace: self.namespace.clone(),
+                }));
+            }
+        }
         Ok(Box::new(NativeTags {
             dataset: self.dataset.clone(),
         }))
@@ -2950,6 +3338,34 @@ impl BaseTable for NativeTable {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                // Only SQL expressions are supported for server-side add_columns
+                if let NewColumnTransform::SqlExpressions(expressions) = &transforms {
+                    let new_columns: Vec<NsNewColumnTransform> = expressions
+                        .iter()
+                        .map(|(name, expression)| NsNewColumnTransform {
+                            name: name.clone(),
+                            expression: Some(expression.clone()),
+                            virtual_column: None,
+                        })
+                        .collect();
+
+                    let request = AlterTableAddColumnsRequest {
+                        id: Some(self.namespace.clone()),
+                        new_columns,
+                    };
+
+                    let response = namespace_client.alter_table_add_columns(request).await?;
+                    return Ok(AddColumnsResult {
+                        version: response.version as u64,
+                    });
+                }
+                // For non-SQL transforms, fall back to local execution
+            }
+        }
+
         let mut dataset = self.dataset.get_mut().await?;
         dataset.add_columns(transforms, read_columns, None).await?;
         Ok(AddColumnsResult {
@@ -2958,6 +3374,37 @@ impl BaseTable for NativeTable {
     }
 
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let ns_alterations: Vec<AlterColumnsEntry> = alterations
+                    .iter()
+                    .map(|alt| AlterColumnsEntry {
+                        path: alt.path.clone(),
+                        rename: alt.rename.clone(),
+                        nullable: alt.nullable,
+                        // Convert data_type to JSON representation
+                        data_type: alt
+                            .data_type
+                            .as_ref()
+                            .map(|dt| serde_json::Value::String(dt.to_string()))
+                            .unwrap_or(serde_json::Value::Null),
+                        virtual_column: None,
+                    })
+                    .collect();
+
+                let request = AlterTableAlterColumnsRequest {
+                    id: Some(self.namespace.clone()),
+                    alterations: ns_alterations,
+                };
+
+                let response = namespace_client.alter_table_alter_columns(request).await?;
+                return Ok(AlterColumnsResult {
+                    version: response.version as u64,
+                });
+            }
+        }
+
         let mut dataset = self.dataset.get_mut().await?;
         dataset.alter_columns(alterations).await?;
         Ok(AlterColumnsResult {
@@ -2966,6 +3413,21 @@ impl BaseTable for NativeTable {
     }
 
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = AlterTableDropColumnsRequest {
+                    id: Some(self.namespace.clone()),
+                    columns: columns.iter().map(|s| s.to_string()).collect(),
+                };
+
+                let response = namespace_client.alter_table_drop_columns(request).await?;
+                return Ok(DropColumnsResult {
+                    version: response.version as u64,
+                });
+            }
+        }
+
         let mut dataset = self.dataset.get_mut().await?;
         dataset.drop_columns(columns).await?;
         Ok(DropColumnsResult {
@@ -2974,6 +3436,44 @@ impl BaseTable for NativeTable {
     }
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = ListTableIndicesRequest {
+                    id: Some(self.namespace.clone()),
+                    version: None,
+                    page_token: None,
+                    limit: None,
+                };
+
+                let response = namespace_client.list_table_indices(request).await?;
+                let indices = response
+                    .indexes
+                    .into_iter()
+                    .filter_map(|idx| {
+                        // Skip internal indexes
+                        if idx.index_name == FRAG_REUSE_INDEX_NAME {
+                            return None;
+                        }
+
+                        // Parse index type from status or try to infer from name
+                        // The status field might contain the index type info
+                        let index_type: crate::index::IndexType = idx
+                            .status
+                            .parse()
+                            .unwrap_or(crate::index::IndexType::BTree);
+
+                        Some(IndexConfig {
+                            index_type,
+                            columns: idx.columns,
+                            name: idx.index_name,
+                        })
+                    })
+                    .collect();
+                return Ok(indices);
+            }
+        }
+
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
         let results = futures::stream::iter(indices.as_slice()).then(|idx| async {
@@ -3041,6 +3541,42 @@ impl BaseTable for NativeTable {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = DescribeTableIndexStatsRequest {
+                    id: Some(self.namespace.clone()),
+                    version: None,
+                    index_name: Some(index_name.to_string()),
+                };
+
+                let response = namespace_client.describe_table_index_stats(request).await?;
+
+                let index_type: crate::index::IndexType = response
+                    .index_type
+                    .as_ref()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(crate::index::IndexType::BTree);
+
+                return Ok(Some(IndexStatistics {
+                    num_indexed_rows: response.num_indexed_rows.map(|n| n as usize).unwrap_or(0),
+                    num_unindexed_rows: response.num_unindexed_rows.map(|n| n as usize).unwrap_or(0),
+                    index_type,
+                    distance_type: response.distance_type.and_then(|s| {
+                        match s.to_lowercase().as_str() {
+                            "l2" => Some(crate::DistanceType::L2),
+                            "cosine" => Some(crate::DistanceType::Cosine),
+                            "dot" => Some(crate::DistanceType::Dot),
+                            "hamming" => Some(crate::DistanceType::Hamming),
+                            _ => None,
+                        }
+                    }),
+                    num_indices: None,
+                    loss: None,
+                }));
+            }
+        }
+
         let stats = match self
             .dataset
             .get()
@@ -3097,6 +3633,41 @@ impl BaseTable for NativeTable {
     }
 
     async fn stats(&self) -> Result<TableStatistics> {
+        // Use server-side metadata if enabled and namespace_client is available
+        if self.server_side_table_metadata_enabled {
+            if let Some(ref namespace_client) = self.namespace_client {
+                let request = GetTableStatsRequest {
+                    id: Some(self.namespace.clone()),
+                };
+
+                let response = namespace_client.get_table_stats(request).await?;
+                let num_indices = self.list_indices().await?.len();
+                let num_fragments = response.fragment_stats.num_fragments as usize;
+                let num_small_fragments = response.fragment_stats.num_small_fragments as usize;
+
+                let frag_stats = FragmentStatistics {
+                    num_fragments,
+                    num_small_fragments,
+                    lengths: FragmentSummaryStats {
+                        min: 0,
+                        max: 0,
+                        mean: 0,
+                        p25: 0,
+                        p50: 0,
+                        p75: 0,
+                        p99: 0,
+                    },
+                };
+
+                return Ok(TableStatistics {
+                    total_bytes: response.total_bytes as usize,
+                    num_rows: response.num_rows as usize,
+                    num_indices,
+                    fragment_stats: frag_stats,
+                });
+            }
+        }
+
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
@@ -3272,9 +3843,20 @@ mod tests {
 
         let batches = make_test_batches();
         let batches = Box::new(batches) as Box<dyn RecordBatchReader + Send>;
-        let table = NativeTable::create(uri, "test", vec![], batches, None, None, None, None)
-            .await
-            .unwrap();
+        let table = NativeTable::create(
+            uri,
+            "test",
+            vec![],
+            batches,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
         assert_eq!(
@@ -4950,7 +5532,13 @@ mod tests {
         assert_eq!(ns_request.k, 10);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 0".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|c| c.column_names.clone()),
+            Some(vec!["id".to_string()])
+        );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
         assert!(ns_request.vector.single_vector.is_some());
@@ -4991,7 +5579,13 @@ mod tests {
         assert_eq!(ns_request.k, 20);
         assert_eq!(ns_request.offset, Some(5));
         assert_eq!(ns_request.filter, Some("id > 5".to_string()));
-        assert_eq!(ns_request.columns, Some(vec!["id".to_string()]));
+        assert_eq!(
+            ns_request
+                .columns
+                .as_ref()
+                .and_then(|c| c.column_names.clone()),
+            Some(vec!["id".to_string()])
+        );
         assert_eq!(ns_request.with_row_id, Some(true));
         assert_eq!(ns_request.bypass_vector_index, Some(true));
         assert!(ns_request.vector_column.is_none()); // No vector column for plain queries

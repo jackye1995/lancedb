@@ -325,11 +325,12 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{create_namespace_request, CreateNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_lowercase().as_str() {
-                "create" => Some(create_namespace_request::Mode::Create),
-                "exist_ok" => Some(create_namespace_request::Mode::ExistOk),
-                "overwrite" => Some(create_namespace_request::Mode::Overwrite),
+            use lance_namespace::models::CreateNamespaceRequest;
+            // mode is now Option<String> with valid values: Create, ExistOk, Overwrite (case insensitive)
+            let mode_str = mode.and_then(|m| match m.to_lowercase().as_str() {
+                "create" => Some("Create".to_string()),
+                "exist_ok" => Some("ExistOk".to_string()),
+                "overwrite" => Some("Overwrite".to_string()),
                 _ => None,
             });
             let request = CreateNamespaceRequest {
@@ -338,7 +339,7 @@ impl Connection {
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
+                mode: mode_str,
                 properties,
             };
             let response = inner.create_namespace(request).await.infer_error()?;
@@ -360,15 +361,17 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let py = self_.py();
         future_into_py(py, async move {
-            use lance_namespace::models::{drop_namespace_request, DropNamespaceRequest};
-            let mode_enum = mode.and_then(|m| match m.to_uppercase().as_str() {
-                "SKIP" => Some(drop_namespace_request::Mode::Skip),
-                "FAIL" => Some(drop_namespace_request::Mode::Fail),
+            use lance_namespace::models::DropNamespaceRequest;
+            // mode is now Option<String> with valid values: Fail, Skip (case insensitive)
+            let mode_str = mode.and_then(|m| match m.to_uppercase().as_str() {
+                "SKIP" => Some("Skip".to_string()),
+                "FAIL" => Some("Fail".to_string()),
                 _ => None,
             });
-            let behavior_enum = behavior.and_then(|b| match b.to_uppercase().as_str() {
-                "RESTRICT" => Some(drop_namespace_request::Behavior::Restrict),
-                "CASCADE" => Some(drop_namespace_request::Behavior::Cascade),
+            // behavior is now Option<String> with valid values: Restrict, Cascade (case insensitive)
+            let behavior_str = behavior.and_then(|b| match b.to_uppercase().as_str() {
+                "RESTRICT" => Some("Restrict".to_string()),
+                "CASCADE" => Some("Cascade".to_string()),
                 _ => None,
             });
             let request = DropNamespaceRequest {
@@ -377,8 +380,8 @@ impl Connection {
                 } else {
                     Some(namespace)
                 },
-                mode: mode_enum,
-                behavior: behavior_enum,
+                mode: mode_str,
+                behavior: behavior_str,
             };
             let response = inner.drop_namespace(request).await.infer_error()?;
             Python::with_gil(|py| -> PyResult<Py<PyDict>> {

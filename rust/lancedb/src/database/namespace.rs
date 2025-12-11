@@ -41,6 +41,10 @@ pub struct LanceNamespaceDatabase {
     uri: String,
     // Whether to enable server-side query execution
     server_side_query_enabled: bool,
+    // Whether to enable server-side write execution
+    server_side_write_enabled: bool,
+    // Whether to enable server-side table metadata operations
+    server_side_table_metadata_enabled: bool,
 }
 
 impl LanceNamespaceDatabase {
@@ -51,6 +55,8 @@ impl LanceNamespaceDatabase {
         read_consistency_interval: Option<std::time::Duration>,
         session: Option<Arc<lance::session::Session>>,
         server_side_query_enabled: bool,
+        server_side_write_enabled: bool,
+        server_side_table_metadata_enabled: bool,
     ) -> Result<Self> {
         let mut builder = ConnectBuilder::new(ns_impl);
         for (key, value) in ns_properties.clone() {
@@ -70,6 +76,8 @@ impl LanceNamespaceDatabase {
             session,
             uri: format!("namespace://{}", ns_impl),
             server_side_query_enabled,
+            server_side_write_enabled,
+            server_side_table_metadata_enabled,
         })
     }
 }
@@ -80,6 +88,11 @@ impl std::fmt::Debug for LanceNamespaceDatabase {
             .field("storage_options", &self.storage_options)
             .field("read_consistency_interval", &self.read_consistency_interval)
             .field("server_side_query_enabled", &self.server_side_query_enabled)
+            .field("server_side_write_enabled", &self.server_side_write_enabled)
+            .field(
+                "server_side_table_metadata_enabled",
+                &self.server_side_table_metadata_enabled,
+            )
             .finish()
     }
 }
@@ -208,6 +221,7 @@ impl Database for LanceNamespaceDatabase {
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
             version: None,
+            with_table_uri: Some(true),
         };
 
         let describe_result = self.namespace.describe_table(describe_request).await;
@@ -261,6 +275,9 @@ impl Database for LanceNamespaceDatabase {
                             lance_read_params: None,
                             location: Some(location),
                             namespace_client,
+                            server_side_write_enabled: self.server_side_write_enabled,
+                            server_side_table_metadata_enabled: self
+                                .server_side_table_metadata_enabled,
                         })
                         .await;
                 }
@@ -315,6 +332,8 @@ impl Database for LanceNamespaceDatabase {
             write_options: request.write_options,
             location: Some(location),
             namespace_client,
+            server_side_write_enabled: self.server_side_write_enabled,
+            server_side_table_metadata_enabled: self.server_side_table_metadata_enabled,
         };
 
         listing_db.create_table(create_request).await
@@ -334,6 +353,7 @@ impl Database for LanceNamespaceDatabase {
         let describe_request = DescribeTableRequest {
             id: Some(table_id.clone()),
             version: None,
+            with_table_uri: Some(true),
         };
         let response = self
             .namespace
@@ -367,6 +387,8 @@ impl Database for LanceNamespaceDatabase {
             lance_read_params: request.lance_read_params,
             location: Some(location),
             namespace_client,
+            server_side_write_enabled: self.server_side_write_enabled,
+            server_side_table_metadata_enabled: self.server_side_table_metadata_enabled,
         };
 
         listing_db.open_table(open_request).await

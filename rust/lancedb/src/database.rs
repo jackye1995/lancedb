@@ -71,6 +71,10 @@ pub struct OpenTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// Whether to enable server-side write execution.
+    pub server_side_write_enabled: bool,
+    /// Whether to enable server-side table metadata operations.
+    pub server_side_table_metadata_enabled: bool,
 }
 
 impl std::fmt::Debug for OpenTableRequest {
@@ -82,6 +86,11 @@ impl std::fmt::Debug for OpenTableRequest {
             .field("lance_read_params", &self.lance_read_params)
             .field("location", &self.location)
             .field("namespace_client", &self.namespace_client)
+            .field("server_side_write_enabled", &self.server_side_write_enabled)
+            .field(
+                "server_side_table_metadata_enabled",
+                &self.server_side_table_metadata_enabled,
+            )
             .finish()
     }
 }
@@ -170,6 +179,10 @@ pub struct CreateTableRequest {
     /// Optional namespace client for server-side query execution.
     /// When set, queries will be executed on the namespace server instead of locally.
     pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// Whether to enable server-side write execution.
+    pub server_side_write_enabled: bool,
+    /// Whether to enable server-side table metadata operations.
+    pub server_side_table_metadata_enabled: bool,
 }
 
 impl CreateTableRequest {
@@ -182,6 +195,8 @@ impl CreateTableRequest {
             write_options: WriteOptions::default(),
             location: None,
             namespace_client: None,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         }
     }
 }

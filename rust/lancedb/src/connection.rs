@@ -414,6 +414,8 @@ impl OpenTableBuilder {
                 lance_read_params: None,
                 location: None,
                 namespace_client: None,
+                server_side_write_enabled: false,
+                server_side_table_metadata_enabled: false,
             },
             embedding_registry,
         }
@@ -1115,6 +1117,8 @@ pub struct ConnectNamespaceBuilder {
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     session: Option<Arc<lance::session::Session>>,
     server_side_query_enabled: bool,
+    server_side_write_enabled: bool,
+    server_side_table_metadata_enabled: bool,
 }
 
 impl ConnectNamespaceBuilder {
@@ -1127,6 +1131,8 @@ impl ConnectNamespaceBuilder {
             embedding_registry: None,
             session: None,
             server_side_query_enabled: false,
+            server_side_write_enabled: false,
+            server_side_table_metadata_enabled: false,
         }
     }
 
@@ -1193,6 +1199,29 @@ impl ConnectNamespaceBuilder {
         self
     }
 
+    /// Enable server-side write execution.
+    ///
+    /// When enabled, write operations (add, update, delete, merge_insert, create_table)
+    /// will be executed on the namespace server instead of locally.
+    ///
+    /// Default is `false` (writes executed locally).
+    pub fn server_side_write(mut self, enabled: bool) -> Self {
+        self.server_side_write_enabled = enabled;
+        self
+    }
+
+    /// Enable server-side table metadata operations.
+    ///
+    /// When enabled, table metadata operations (list_indices, create_index, drop_index,
+    /// stats, version, list_versions, restore, column operations, tags) will be
+    /// executed on the namespace server.
+    ///
+    /// Default is `false` (metadata operations executed locally).
+    pub fn server_side_table_metadata(mut self, enabled: bool) -> Self {
+        self.server_side_table_metadata_enabled = enabled;
+        self
+    }
+
     /// Execute the connection
     pub async fn execute(self) -> Result<Connection> {
         use crate::database::namespace::LanceNamespaceDatabase;
@@ -1205,6 +1234,8 @@ impl ConnectNamespaceBuilder {
                 self.read_consistency_interval,
                 self.session,
                 self.server_side_query_enabled,
+                self.server_side_write_enabled,
+                self.server_side_table_metadata_enabled,
             )
             .await?,
         );
