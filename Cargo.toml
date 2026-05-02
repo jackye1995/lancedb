@@ -80,3 +80,6 @@ debug = false
 debug-assertions = false
 strip = "debuginfo"
 incremental = false
+
+[patch.crates-io]
+object_store = { git = "https://github.com/jackye1995/arrow-rs-object-store.git", branch = "jack/azure-credential-type-0.12" }
