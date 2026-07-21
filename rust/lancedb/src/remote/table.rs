@@ -2521,10 +2521,12 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 })
             })
             .collect();
+        let mut body = serde_json::json!({ "new_columns": new_columns });
+        self.apply_branch_body(&mut body);
         let request = self
             .client
             .post(&format!("/v1/table/{}/add_columns/", self.identifier))
-            .json(&serde_json::json!({ "new_columns": new_columns }));
+            .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
