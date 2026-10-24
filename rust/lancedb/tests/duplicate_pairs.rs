@@ -604,6 +604,7 @@ async fn union_find_policy_retains_one_row_per_transitive_component() -> anyhow:
         let table = VectorQueryTable::try_new(
             dataset.clone(),
             VectorQueryOptions {
+                method: lancedb::table::datafusion::udtf::duplicate_pairs::PairDiscoveryMethod::Pairwise,
                 column: "vector".into(),
                 distance_threshold: 0.015,
                 selection: PartitionSelection::All,
