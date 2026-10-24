@@ -35,7 +35,7 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 4;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 5;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
@@ -48,7 +48,6 @@ const MAX_COORDINATE_BYTES: usize = 8;
 const STAGED_ROW_OVERHEAD_BYTES: usize = 64;
 const PAIR_ROW_BYTES: usize = 20;
 
-/// Bounded block-pair execution and cyclic ownership of anchor blocks.
 /// Every worker of a partition must use the same rows/count and a unique index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DuplicatePairsSharding {
@@ -479,8 +478,8 @@ pub struct DuplicatePairsExec {
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     output: DuplicatePairsOutput,
-    sharding: DuplicatePairsSharding,
     method: PairDiscoveryMethod,
+    sharding: DuplicatePairsSharding,
 }
 
 impl DuplicatePairsExec {
@@ -515,8 +514,8 @@ impl DuplicatePairsExec {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             output: DuplicatePairsOutput::default(),
-            sharding: DuplicatePairsSharding::default(),
             method: PairDiscoveryMethod::default(),
+            sharding: DuplicatePairsSharding::default(),
         })
     }
     /// Assign a disjoint stripe of anchor blocks without materializing tile descriptors.
@@ -573,14 +572,11 @@ impl DisplayAs for DuplicatePairsExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}, rows_per_shard={}, shard_index={}, shard_count={}",
+            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}",
             self.config.dataset_version,
             self.config.column,
             self.config.distance_threshold,
-            self.tasks.len(),
-            self.sharding.rows_per_shard,
-            self.sharding.shard_index,
-            self.sharding.shard_count,
+            self.tasks.len()
         )
     }
 }
@@ -616,11 +612,11 @@ impl ExecutionPlan for DuplicatePairsExec {
             return plan_err!("duplicate-pair output partition out of bounds");
         }
         let method = self.method;
+        let sharding = self.sharding;
         let output = self.output.clone();
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
         let config = self.config.clone();
-        let sharding = self.sharding;
         let output_rows = MetricBuilder::new(&self.metrics).counter("output_rows", partition);
         let completed =
             MetricBuilder::new(&self.metrics).counter("completed_partitions", partition);
@@ -676,10 +672,11 @@ impl ExecutionPlan for DuplicatePairsExec {
                     )
                     .await?,
                         PairDiscoveryMethod::SimilaritySearch { nprobes, max_nprobes } => {
-                            lance::index::vector::similarity_dedup::find_similar_pairs_in_partition(
+                            lance::index::vector::similarity_dedup::find_similar_pairs_in_partition_with_sharding(
                                 dataset.clone(), &config.column, task.segment_id, task.partition_id,
                                 config.distance_threshold,
                                 lance::index::vector::similarity_dedup::SimilaritySearchOptions { nprobes, max_nprobes },
+                                lance::index::vector::similarity_dedup::SimilaritySearchSharding { rows: sharding.rows_per_shard, index: sharding.shard_index, count: sharding.shard_count },
                             ).await?
                         }
                     };
