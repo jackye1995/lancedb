@@ -2669,6 +2669,12 @@ def _openable_descriptors(table, *, by_address):
         .limit(100)
         .to_arrow(blob_mode="descriptions")
     )
+    version = table.version
+    committed_at = next(
+        item["timestamp"]
+        for item in table.list_versions()
+        if item["version"] == version
+    )
     descriptors = {}
     for row in hits.to_pylist():
         descriptor = row["image"]
@@ -2676,10 +2682,8 @@ def _openable_descriptors(table, *, by_address):
             descriptor = dict(descriptor)
             descriptor["source"] = {
                 "uri": table.to_lance().uri,
-                "version": table.version,
-                "committed_at_micros": round(
-                    table.to_lance().get_version()["timestamp"].timestamp() * 1_000_000
-                ),
+                "version": version,
+                "committed_at_micros": round(committed_at.timestamp() * 1_000_000),
                 "branch": None,
                 "column": "image",
                 "row_reference": row["_rowaddr" if by_address else "_rowid"],
