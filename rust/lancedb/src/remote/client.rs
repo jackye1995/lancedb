@@ -802,6 +802,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.get(full_uri)
     }
 
+    pub fn head(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.head(full_uri)
+    }
+
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.post(full_uri)
